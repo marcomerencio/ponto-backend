@@ -9,6 +9,7 @@ dotenv.config({ path: path.resolve(__dirname, '../.env') });
 const authRoutes = require('./routes/authRoutes');
 const funcionariosRoutes = require('./routes/funcionariosRoutes');
 const registrosRoutes = require('./routes/registrosRoutes');
+const relatoriosRoutes = require('./routes/relatoriosRoutes');
 
 const app = express();
 
@@ -25,6 +26,7 @@ app.get('/health', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/funcionarios', funcionariosRoutes);
 app.use('/api/registros', registrosRoutes);
+app.use('/api/relatorios', relatoriosRoutes);
 
 app.use((req, res) => {
   res.status(404).json({
