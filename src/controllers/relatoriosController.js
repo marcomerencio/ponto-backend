@@ -304,9 +304,98 @@ async function obterResumo(req, res) {
     res.status(500).json({ error: 'Erro ao gerar resumo' });
   }
 }
+async function obterRelatorioMensal(req, res) {
+  try {
+    const { ano, mes } = req.query;
 
+    if (!ano || !mes) {
+      return res.status(400).json({ error: "ano e mes são obrigatórios" });
+    }
+
+    const inicio = new Date(ano, mes - 1, 1).getTime();
+    const fim = new Date(ano, mes, 0, 23, 59, 59).getTime();
+
+    const [rows] = await pool.query(`
+      SELECT r.*, f.nome
+      FROM registros r
+      JOIN funcionarios f ON f.id = r.funcionario_id
+      WHERE r.data_hora BETWEEN ? AND ?
+      ORDER BY r.funcionario_id, r.data_hora
+    `, [inicio, fim]);
+
+    const resultado = {};
+
+    rows.forEach(r => {
+      const funcionarioId = r.funcionario_id;
+      const nome = r.nome;
+      const dia = new Date(Number(r.data_hora)).toISOString().split('T')[0];
+
+      if (!resultado[funcionarioId]) {
+        resultado[funcionarioId] = {
+          funcionario: nome,
+          dias: {},
+          totalHoras: 0
+        };
+      }
+
+      if (!resultado[funcionarioId].dias[dia]) {
+        resultado[funcionarioId].dias[dia] = [];
+      }
+
+      resultado[funcionarioId].dias[dia].push({
+        tipo: r.tipo,
+        timestamp: Number(r.data_hora)
+      });
+    });
+
+    const respostaFinal = [];
+
+    Object.values(resultado).forEach(func => {
+      let totalHoras = 0;
+      let diasTrabalhados = 0;
+
+      Object.values(func.dias).forEach(eventos => {
+        eventos.sort((a, b) => a.timestamp - b.timestamp);
+
+        let entrada = null;
+        let totalDia = 0;
+
+        eventos.forEach(e => {
+          if (e.tipo === "ENTRADA") entrada = e.timestamp;
+
+          if (e.tipo === "SAIDA" && entrada) {
+            totalDia += e.timestamp - entrada;
+            entrada = null;
+          }
+        });
+
+        const horasDia = totalDia / (1000 * 60 * 60);
+
+        if (horasDia > 0) diasTrabalhados++;
+
+        totalHoras += horasDia;
+      });
+
+      const horasExtra = Math.max(0, totalHoras - (diasTrabalhados * 8));
+
+      respostaFinal.push({
+        funcionario: func.funcionario,
+        diasTrabalhados,
+        totalHoras: totalHoras.toFixed(2),
+        horasExtra: horasExtra.toFixed(2)
+      });
+    });
+
+    res.json(respostaFinal);
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erro no relatório mensal" });
+  }
+}
 module.exports = {
   exportarRelatorioExcel,
   exportarRelatorioPDF,
-  obterResumo
-};
+  obterResumo,
+  obterRelatorioMensal
+};;
