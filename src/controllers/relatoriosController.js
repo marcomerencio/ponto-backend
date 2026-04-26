@@ -104,6 +104,76 @@ async function obterRegistrosComFiltros(query) {
   return rows;
 }
 
+function calcularResumoMensal(rows) {
+  const dados = {};
+
+  rows.forEach((r) => {
+    const funcionarioId = r.funcionario_id;
+    const nome = r.funcionario_nome || r.nome;
+    const dia = new Date(Number(r.data_hora)).toISOString().split('T')[0];
+
+    if (!dados[funcionarioId]) {
+      dados[funcionarioId] = {
+        funcionarioId,
+        funcionario: nome,
+        dias: {}
+      };
+    }
+
+    if (!dados[funcionarioId].dias[dia]) {
+      dados[funcionarioId].dias[dia] = [];
+    }
+
+    dados[funcionarioId].dias[dia].push({
+      tipo: r.tipo,
+      timestamp: Number(r.data_hora)
+    });
+  });
+
+  return Object.values(dados).map((func) => {
+    let totalHoras = 0;
+    let diasTrabalhados = 0;
+
+    Object.values(func.dias).forEach((eventos) => {
+      eventos.sort((a, b) => a.timestamp - b.timestamp);
+
+      let entrada = null;
+      let totalDiaMs = 0;
+
+      eventos.forEach((evento) => {
+        if (evento.tipo === 'ENTRADA') {
+          entrada = evento.timestamp;
+        }
+
+        if (evento.tipo === 'SAIDA' && entrada) {
+          totalDiaMs += evento.timestamp - entrada;
+          entrada = null;
+        }
+      });
+
+      const horasDia = totalDiaMs / (1000 * 60 * 60);
+
+      if (horasDia > 0) {
+        diasTrabalhados++;
+      }
+
+      totalHoras += horasDia;
+    });
+
+    const horasPrevistas = diasTrabalhados * JORNADA_NORMAL_HORAS;
+    const horasExtra = Math.max(0, totalHoras - horasPrevistas);
+
+    return {
+      funcionarioId: func.funcionarioId,
+      funcionario: func.funcionario,
+      diasTrabalhados,
+      horasPrevistas: horasPrevistas.toFixed(2),
+      totalHoras: totalHoras.toFixed(2),
+      horasExtra: horasExtra.toFixed(2)
+    };
+  });
+}
+
 async function exportarRelatorioExcel(req, res) {
   try {
     const rows = await obterRegistrosComFiltros(req.query);
@@ -122,6 +192,7 @@ async function exportarRelatorioExcel(req, res) {
       { header: 'Latitude', key: 'latitude', width: 16 },
       { header: 'Longitude', key: 'longitude', width: 16 }
     ];
+
     sheet.getRow(1).font = { bold: true };
 
     rows.forEach((r) => {
@@ -144,6 +215,7 @@ async function exportarRelatorioExcel(req, res) {
       { header: 'Horas Trabalhadas', key: 'horas', width: 20 },
       { header: 'Horas Extra', key: 'horasExtra', width: 16 }
     ];
+
     resumoSheet.getRow(1).font = { bold: true };
     resumo.forEach((r) => resumoSheet.addRow(r));
 
@@ -151,6 +223,7 @@ async function exportarRelatorioExcel(req, res) {
       'Content-Type',
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     );
+
     res.setHeader(
       'Content-Disposition',
       `attachment; filename=relatorio_ponto_${Date.now()}.xlsx`
@@ -187,28 +260,27 @@ async function exportarRelatorioPDF(req, res) {
     try {
       doc.image(logoPath, 40, 30, { width: 90 });
     } catch (e) {
-      // Se o logo falhar, o PDF continua a ser gerado.
+      console.warn('Logo não carregado:', e.message);
     }
 
-    doc
-      .fontSize(18)
-      .text('GRUPO BOLHÃO', 150, 35, { align: 'left' });
-
-    doc
-      .fontSize(11)
-      .text('TALHO & CONGELADOS', 150, 58, { align: 'left' });
+    doc.fontSize(18).text('GRUPO BOLHÃO', 150, 35);
+    doc.fontSize(11).text('TALHO & CONGELADOS', 150, 58);
 
     doc.moveDown(4);
 
-    doc
-      .fontSize(16)
-      .text('Relatório de Entradas e Saídas', { align: 'center' });
+    doc.fontSize(16).text('Relatório de Entradas e Saídas', {
+      align: 'center'
+    });
 
     doc.moveDown();
 
     const periodoTexto =
       req.query.dataInicio || req.query.dataFim
-        ? `Período: ${req.query.dataInicio ? formatarData(req.query.dataInicio) : 'início'} até ${req.query.dataFim ? formatarData(req.query.dataFim) : 'fim'}`
+        ? `Período: ${
+            req.query.dataInicio ? formatarData(req.query.dataInicio) : 'início'
+          } até ${
+            req.query.dataFim ? formatarData(req.query.dataFim) : 'fim'
+          }`
         : 'Período: Todos os registos';
 
     doc.fontSize(10).text(periodoTexto);
@@ -242,9 +314,7 @@ async function exportarRelatorioPDF(req, res) {
       }
 
       const localizacao =
-        r.latitude && r.longitude
-          ? `${r.latitude}, ${r.longitude}`
-          : '-';
+        r.latitude && r.longitude ? `${r.latitude}, ${r.longitude}` : '-';
 
       doc.fontSize(8);
       doc.text(r.funcionario_nome || '-', startX, y, { width: 130 });
@@ -304,98 +374,151 @@ async function obterResumo(req, res) {
     res.status(500).json({ error: 'Erro ao gerar resumo' });
   }
 }
+
 async function obterRelatorioMensal(req, res) {
   try {
     const { ano, mes } = req.query;
 
     if (!ano || !mes) {
-      return res.status(400).json({ error: "ano e mes são obrigatórios" });
+      return res.status(400).json({ error: 'ano e mes são obrigatórios' });
     }
 
-    const inicio = new Date(ano, mes - 1, 1).getTime();
-    const fim = new Date(ano, mes, 0, 23, 59, 59).getTime();
+    const inicio = new Date(Number(ano), Number(mes) - 1, 1).getTime();
+    const fim = new Date(
+      Number(ano),
+      Number(mes),
+      0,
+      23,
+      59,
+      59,
+      999
+    ).getTime();
 
-    const [rows] = await pool.query(`
-      SELECT r.*, f.nome
-      FROM registros r
-      JOIN funcionarios f ON f.id = r.funcionario_id
-      WHERE r.data_hora BETWEEN ? AND ?
-      ORDER BY r.funcionario_id, r.data_hora
-    `, [inicio, fim]);
-
-    const resultado = {};
-
-    rows.forEach(r => {
-      const funcionarioId = r.funcionario_id;
-      const nome = r.nome;
-      const dia = new Date(Number(r.data_hora)).toISOString().split('T')[0];
-
-      if (!resultado[funcionarioId]) {
-        resultado[funcionarioId] = {
-          funcionario: nome,
-          dias: {},
-          totalHoras: 0
-        };
-      }
-
-      if (!resultado[funcionarioId].dias[dia]) {
-        resultado[funcionarioId].dias[dia] = [];
-      }
-
-      resultado[funcionarioId].dias[dia].push({
-        tipo: r.tipo,
-        timestamp: Number(r.data_hora)
-      });
+    const rows = await obterRegistrosComFiltros({
+      dataInicio: inicio,
+      dataFim: fim
     });
 
-    const respostaFinal = [];
+    const resumoMensal = calcularResumoMensal(rows);
 
-    Object.values(resultado).forEach(func => {
-      let totalHoras = 0;
-      let diasTrabalhados = 0;
-
-      Object.values(func.dias).forEach(eventos => {
-        eventos.sort((a, b) => a.timestamp - b.timestamp);
-
-        let entrada = null;
-        let totalDia = 0;
-
-        eventos.forEach(e => {
-          if (e.tipo === "ENTRADA") entrada = e.timestamp;
-
-          if (e.tipo === "SAIDA" && entrada) {
-            totalDia += e.timestamp - entrada;
-            entrada = null;
-          }
-        });
-
-        const horasDia = totalDia / (1000 * 60 * 60);
-
-        if (horasDia > 0) diasTrabalhados++;
-
-        totalHoras += horasDia;
-      });
-
-      const horasExtra = Math.max(0, totalHoras - (diasTrabalhados * 8));
-
-      respostaFinal.push({
-        funcionario: func.funcionario,
-        diasTrabalhados,
-        totalHoras: totalHoras.toFixed(2),
-        horasExtra: horasExtra.toFixed(2)
-      });
-    });
-
-    res.json(respostaFinal);
-
+    res.json(resumoMensal);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Erro no relatório mensal" });
+    res.status(500).json({ error: 'Erro no relatório mensal' });
   }
 }
+
+async function exportarRelatorioMensalPDF(req, res) {
+  try {
+    const { ano, mes } = req.query;
+
+    if (!ano || !mes) {
+      return res.status(400).json({ error: 'ano e mes são obrigatórios' });
+    }
+
+    const inicio = new Date(Number(ano), Number(mes) - 1, 1).getTime();
+    const fim = new Date(
+      Number(ano),
+      Number(mes),
+      0,
+      23,
+      59,
+      59,
+      999
+    ).getTime();
+
+    const rows = await obterRegistrosComFiltros({
+      dataInicio: inicio,
+      dataFim: fim
+    });
+
+    const resumoMensal = calcularResumoMensal(rows);
+
+    const doc = new PDFDocument({
+      margin: 40,
+      size: 'A4'
+    });
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=relatorio_mensal_${mes}_${ano}.pdf`
+    );
+
+    doc.pipe(res);
+
+    const logoPath = path.join(__dirname, '../assets/logo_bolhao.png');
+
+    try {
+      doc.image(logoPath, 40, 30, { width: 90 });
+    } catch (e) {
+      console.warn('Logo não carregado:', e.message);
+    }
+
+    doc.fontSize(18).text('GRUPO BOLHÃO', 150, 35);
+    doc.fontSize(11).text('TALHO & CONGELADOS', 150, 58);
+    doc.fontSize(10).text(`Relatório Mensal - ${mes}/${ano}`, 150, 78);
+
+    doc.moveDown(5);
+
+    doc.fontSize(16).text('Resumo Mensal de Ponto', {
+      align: 'center'
+    });
+
+    doc.moveDown();
+
+    doc.fontSize(10).text(`Jornada normal: ${JORNADA_NORMAL_HORAS}h/dia`);
+    doc.text('Referência semanal: 40h/semana');
+    doc.text(`Gerado em: ${new Date().toLocaleString('pt-PT')}`);
+
+    doc.moveDown();
+
+    const startX = 40;
+    let y = doc.y;
+
+    doc.fontSize(9).font('Helvetica-Bold');
+    doc.text('Funcionário', startX, y, { width: 170 });
+    doc.text('Dias', startX + 180, y, { width: 60 });
+    doc.text('Horas Prev.', startX + 245, y, { width: 80 });
+    doc.text('Horas Trab.', startX + 335, y, { width: 80 });
+    doc.text('Horas Extra', startX + 430, y, { width: 90 });
+
+    y += 18;
+    doc.moveTo(startX, y - 5).lineTo(555, y - 5).stroke();
+    doc.font('Helvetica');
+
+    resumoMensal.forEach((r) => {
+      if (y > 740) {
+        doc.addPage();
+        y = 50;
+      }
+
+      doc.fontSize(9);
+      doc.text(r.funcionario, startX, y, { width: 170 });
+      doc.text(String(r.diasTrabalhados), startX + 180, y, { width: 60 });
+      doc.text(`${r.horasPrevistas}h`, startX + 245, y, { width: 80 });
+      doc.text(`${r.totalHoras}h`, startX + 335, y, { width: 80 });
+      doc.text(`${r.horasExtra}h`, startX + 430, y, { width: 90 });
+
+      y += 22;
+    });
+
+    if (resumoMensal.length === 0) {
+      doc.moveDown();
+      doc.fontSize(11).text('Sem registos para este período.');
+    }
+
+    doc.end();
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro ao gerar PDF mensal' });
+  }
+}
+
 module.exports = {
   exportarRelatorioExcel,
   exportarRelatorioPDF,
   obterResumo,
-  obterRelatorioMensal
-};;
+  obterRelatorioMensal,
+  exportarRelatorioMensalPDF
+};
